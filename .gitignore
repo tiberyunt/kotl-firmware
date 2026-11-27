@@ -1,0 +1,9 @@
+/build
+/downloads
+/third_party
+/toolchain
+.DS_Store
+__pycache__/
+*.py[cod]
+*.iso
+/docs/*.pdf
