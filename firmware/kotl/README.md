@@ -1,286 +1,124 @@
-# Native EV9 EFI experiment
+# Kotl EV9 firmware
 
-This ports the standalone Alpha EFI subset to the draft Kotl EV9 QEMU platform.
-It remains a standalone EFI subset rather than a complete EDK II firmware image.
-Native GRUB runs here; Linux currently boots on the separate Clipper/PAL path.
-The supplied platform specification and Alpha architecture PDF are unchanged.
+A standalone Alpha EFI service subset for the revised Kotl EV9 emulator.
+UEFI, applications and runtime services run physically at F level, FMODEL=0.
+The resident Kotl PAL is prepared before ExitBootServices and activated only
+by the retained Enter function afterward. The separate EDK II checkout also uses this F-mode/PAL model. This is not UEFI certification or Linux boot.
 
-From the repository root, with the local cross-toolchain available:
+## Build and use
+
+From this repository with a local Alpha toolchain and the sibling QEMU built:
 
 ```sh
-make kotl-efi                 # firmware, EFI apps and sparse GPT/FAT32 disk
-make run-kotl-efi             # also builds modified QEMU; NVMe boot on eight harts
-make shell-kotl-efi           # project serial monitor
-make run-kotl-efi-display     # Cocoa window on macOS; F10 setup, F12 boot menu
-make test-kotl-ui             # 8 graphics/keyboard/discovery scenarios
-make test-kotl-setup          # 16 setup/persistence/failure scenarios
-make test-events              # 9 event/input/unload scenarios on both platforms
-make test-variables           # 13 nonvolatile/runtime variable scenarios
-make test-relocations         # 14 emulator cases + 5 converter checks
-make test-kotl-efi            # 17 integration scenarios; logs build/kotl-efi/test-*.log
+make kotl-efi
+make run-kotl-efi
+make shell-kotl-efi
+make run-kotl-efi-display
+make run-kotl-efi-display KOTL_DISPLAY_WIDTH=1920 KOTL_DISPLAY_HEIGHT=1080
+make run-kotl-efi-display KOTL_DISPLAY_WIDTH=2560 KOTL_DISPLAY_HEIGHT=1440
+make run-kotl-efi-display KOTL_DISPLAY_WIDTH=3840 KOTL_DISPLAY_HEIGHT=2160
 ```
 
-Exit QEMU with Ctrl-a x. The default flash boot scans PCI bus zero for NVMe controllers and up to 1024
-active namespace IDs per controller, then checks every GPT ESP (up to 128 table
-entries). Boot candidates require 512-byte sectors and `\EFI\BOOT\BOOTAXP64.EFI` in a GPT FAT32 ESP. Up to 32 validated boot candidates are retained;
-invalid images and corrupt volumes are skipped so later valid ESPs can boot.
-There is no fallback to the embedded image on disk failure. Select the embedded
-self-test with `-M kotl-ev9,firmware-args=selftest`, or the monitor with
-`firmware-args=shell`. Monitor commands are `help`, `memmap`, `boot` (embedded),
-`disk` (NVMe), and `shutdown`.
+`KOTL_QEMU=/absolute/path/to/qemu-system-alpha` overrides the companion emulator.
+Run targets use the Z1-lite test part for their four-core/two-thread topology.
+Ordinary 21564 defaults to four single-thread cores. Unchanged outputs are
+reused. Flash is `build/kotl-efi/kotl-efi-flash.bin`; NVMe ESP is
+`build/kotl-efi/esp.img`. Disks use snapshot mode. Serial QEMU exits with Ctrl-a x.
 
-## BIOS-style setup, display and boot selection
+Press F10 during startup for Main/Boot/Console/Exit settings, or F12 for a
+one-time boot choice. Menus use a full-black background, centered Kotl splash
+and detailed antialiased fonts. Arrow keys/Tab navigate, Enter selects, F9 loads
+pending defaults, F10 saves, Esc discards. Serial F10/F12 escape sequences also
+work. The display path uses Bochs GOP, supporting 1024x768, 1080p, 1440p and 4K.
+Text rendering uses the active framebuffer dimensions. Serial remains available.
 
-`make run-kotl-efi-display` attaches `bochs-display` and opens the native macOS
-Cocoa window. Click the window and press **F10** during startup for firmware
-setup, or **F12** for the one-time boot menu. Both use the antialiased font with
-black backgrounds, highlighted selections and keyboard help.
+Settings and EFI variables persist in separate files under `build/kotl-efi/`.
+Use separate `KOTL_SETTINGS`/`KOTL_VARIABLES` paths for independent VMs.
+Writes stage separately; failed host-file replacement preserves the old record.
+Authenticated variable writes and physical flash journals remain unsupported.
 
-F10 setup has Main, Boot, Console and Exit tabs. Left/Right or Tab switches tabs,
-Up/Down selects a field, and Enter changes a value or activates an action.
-F9 loads defaults into the pending configuration; F10 saves and boots; Esc
-discards changes and boots. The Exit tab also offers the serial monitor and
-shutdown. Main reports actual processor, hart count, memory and boot discovery.
+## Boot and storage
 
-Saved options are the default NVMe/namespace/ESP boot entry, startup delay
-(2, 5 or 10 seconds), and graphical text console enablement. Serial stays
-available and disabling graphical text does not remove EFI GOP. F12 selection
-overrides the saved entry for this boot only; it never writes settings. R rescans
-storage and S enters the monitor. Number keys 1–9 also select F12 entries.
+Stage one validates the DTB, installs the F exception vector and direct KSI
+entry, copies the EFI image to RAM+2 MiB and calls it at F. It creates no CPU
+identity page tables and enters no kernel privilege while boot services run.
+EFI allocation units remain 4 KiB; physical addresses equal C pointers.
+Supported firmware RAM is 64 MiB through 1 GiB, although QEMU supports more.
 
-The run targets attach `build/kotl-efi/settings.bin`. Override its location with
-`KOTL_SETTINGS=/path/to/settings.bin`. QEMU's optional
-`-M kotl-ev9,settings-file=...` property loads this 64-byte store; Save creates or
-replaces the file. Without the property, changes survive guest reset only and
-Main reports "Until QEMU exits". Pending edits never write the store. Save
-failure keeps setup open, leaves applied settings unchanged, and permits retry
-or discard. Invalid sizes, CRCs, versions and field ranges fall back to defaults
-without overwriting the file at boot.
+The boot manager scans PCI bus zero, NVMe namespaces and GPT FAT32 ESPs for
+`\EFI\BOOT\BOOTAXP64.EFI`. That filename and the Alpha PE machine/ABI are
+experimental. It supports BootOrder/BootNext, device paths, relocation and
+nested image lifecycle. Invalid candidates are skipped. Filesystems are
+read-only, with 512-byte sectors. NVMe uses polling and six private 16 KiB
+DMA pages. Requester contexts now use the 32-byte v2 format and native
+three-level 16 KiB page tables. No arbitrary device DMA reaches firmware RAM.
+GPU BARs are kept apart from NVMe BAR allocation.
 
-The default entry is matched by PCI requester ID, namespace ID and ESP ordinal.
-If topology or partitions change and the entry disappears, the first valid
-candidate is used. Rescan to select and save a new default. This is a small
-firmware configuration store, not the general EFI variable service or BootOrder
-protocol. General EFI variables now have a separate store and service, described
-below. Each VM should have its own backing files; there is no multi-process
-configuration merge or flash journal.
+`-M kotl-ev9,firmware-args=selftest` selects the embedded test; `shell` opens
+the monitor (`help`, `memmap`, `boot`, `disk`, `shutdown`). The normal boot path
+uses NVMe. ExitBootServices validates the map key, quiesces storage/DMA and
+releases boot services without changing FMODEL. A prepared PAL transfer then
+uses Enter. A loader that never prepares it remains an F-level EFI test app.
 
-Serial terminals can send F10 as `ESC [ 21 ~`, F9 as `ESC [ 20 ~`, F12 as
-`ESC [ 24 ~`, and conventional arrow escape sequences. A standalone Esc is
-decoded after a bounded 50 ms wait.
+## PAL and memory
 
-The firmware initializes Bochs PCI BARs and a BGR framebuffer with modes for
-1024×768, 1920×1080, 2560×1440 and 3840×2160. The 4K mode requires 32 MiB
-of video memory. It
-installs EFI Graphics Output Protocol with QueryMode, SetMode and all four BLT
-operations, including overlapping video copies. The 80×25 console fills the framebuffer and uses
-[antialiased Noto Sans Mono](font/README.md) with detailed glyph atlases selected
-for the active resolution. Framebuffer
-access remains available to the loaded application; firmware text rendering
-stops after ExitBootServices. The fixed mode is not an EDID-driven mode list.
+The [resident personality](pal/README.md) derives from QEMU PALcode; it is GPL
+licensed, with upstream source and provenance retained. UEFI exposes a
+provisional GetInfo/Stage/Activate protocol; only the trusted compiled-in
+resident image is currently available. Stage explicitly returns unsupported.
+The developer policy is Permissive; Enforce, Db/Dbx, SVN persistence and TPM
+measurement are not implemented.
 
-The emulator now builds Cocoa on macOS and VNC support. For a remote viewer,
-use `-display none -vnc 127.0.0.1:1` instead of `-display cocoa` with the same
-QEMU device arguments. `-display none` also permits headless GPU tests. This
-implements Bochs virtual display support; it does not implement virtio-gpu.
-The draft polled keyboard mailbox receives QEMU window/QMP key events and
-supports menu navigation, US letters/digits, basic punctuation and shift.
-It is not a USB HID driver or a general keyboard layout implementation.
+Memory relative to RAM base 0x100000000:
 
-## Execution and memory
-
-Stage 1 executes in F privilege from flash at zero. It parses QEMU's DTB in SRAM,
-checks required controller descriptions, copies the EFI core into DRAM, installs
-16 KiB native page tables with 32 MiB identity leaves, and enters K privilege with
-translation enabled. The EFI core uses the shared protocol database, allocator,
-PE loader, Block I/O, GPT and FAT32 implementation. It publishes the retained DTB
-under the EFI device-tree configuration-table GUID.
-
-| Physical range | Use |
+| Range | Use |
 | --- | --- |
-| 0–16 MiB | Flash, retained stage 1 and embedded image |
-| 0x01000000–0x011fffff | SRAM, stage-1 state, page tables, stack and DTB |
-| RAM + 0–2 MiB | Reserved IOMMU context/page tables |
-| RAM + 2–4 MiB | Retained EFI core and stack |
-| RAM + 4–8 MiB | Boot data reservation; first six 16 KiB pages are DMA buffers |
-| RAM + 8 MiB onward | Allocatable EFI memory |
-| RAM + 16 MiB | Fixed PE32+ application base (reserved when loaded) |
+| 0..2 MiB | Reserved metadata and private IOMMU tables |
+| 2..4 MiB | Retained EFI code/data/stack |
+| 4..6 MiB | Boot/DMA reservation |
+| 6 MiB..6 MiB+64 KiB | Resident PAL code (F-only RX after transfer) |
+| 6 MiB+960 KiB..7 MiB | Retained read-only F PAL information/context |
+| 7..8 MiB | Sixteen private 64 KiB F scratch/stack areas |
+| 8 MiB onward | EFI-managed memory, application images and OS allocations |
 
-RAM begins at 0x100000000. Firmware accepts 64 MiB through 1 GiB, although QEMU
-supports larger configurations. AllocatePages addresses and C pointers refer to
-the same identity-mapped memory. EFI allocation units remain 4 KiB; native
-hardware translation units are 16 KiB. The PE loader uses the project's preferred native image base (0x101000000)
-when available and relocates eligible images elsewhere in RAM when necessary.
-Images still use Alpha64 machine code 0x284 and the experimental local ABI. The local
-`BOOTAXP64.EFI` filename is not an assigned UEFI architecture filename.
+The entire PAL range stays reserved in the EFI map. The physical DTB is in the
+reserved upper MiB of SRAM; `/firmware/kotl-pal` publishes resident, pending
+and active state. Its structure is finalized before selection; fixed fields
+change without allocation during transfer. See [the PAL binding](../../docs/kotl-firmware-pal.md).
 
-## Storage and handoff
+## Validate
 
-The NVMe driver scans PCI bus zero, assigns the selected controller's BAR,
-uses polling with bounded waits, identifies the selected active namespace, and
-creates admin and I/O queue pairs of depth 16. Reads use a private bounce buffer
-in chunks up to 4 KiB. Only six 16 KiB pages are mapped for that requester's DMA;
-firmware code, application RAM and stacks have no device mappings. The driver
-supports 512-byte sectors without metadata and does not write storage. QEMU's
-snapshot backend preserves the source disk. Discovery switches controllers with
-old decode and DMA disabled, removes the previous volume's protocol handles,
-and refuses to switch while a file or application is open. EFI filesystem
-protocols expose the selected volume; the menu inventories the other candidates.
-GPU BARs occupy the top 32 MiB of the PCI32 window; the active NVMe controller
-uses its bottom aperture, avoiding overlap.
+```sh
+make test-kotl-efi
+make test-kotl-ui
+make test-kotl-setup
+make test-events
+make test-variables
+make test-relocations
+make test-kotl-pal
+make run-kotl-pal KOTL_PAL_MODEL=pal-4k
+make run-kotl-pal KOTL_PAL_MODEL=full-pal
+```
 
-ExitBootServices validates the application and map key, selects the native
-model, disables NVMe, disables PCI bus mastering and restores IOMMU default deny
-before ending boot services. Retained reset/shutdown/time calls use stage 1's
-KSI handler. The implemented service numbers are documented in
-[the draft bindings](../../docs/kotl-ev9-qemu-bindings.md).
+The PAL test uses real EFI applications, both hardware models, a K-mode kernel,
+4 KiB/16 KiB native tables, stale map keys, early Enter, descriptor copying,
+one-shot selection, F-only code protection and a corrupt
+retained context. Full-PAL also tests exclusion of SMT siblings. Kernel tests
+exercise adapted TLS, IMB, system value, stack pointer, TLB and console calls.
 
-Tests cover embedded and NVMe boot at three RAM sizes, eight-hart topology,
-a relocated PCI slot with xHCI present, namespace ID 7, missing devices and
-namespaces, unsupported 4 KiB sectors, fragmented reads through queue wrap,
-repeated image load/unload, malformed GPT/PE, runtime reset and source-disk
-preservation. The separate UI suite verifies GOP reads/writes and bounds,
-real QMP F12/arrow/Enter input, serial F12, an empty menu, a second ESP,
-a second controller and a second namespace. It captures the actual framebuffer
-to `build/kotl-efi/boot-settings.ppm`. The setup suite separately tests F10 and
-serial F10, Main/Boot/Console/Exit navigation, save/discard/default actions,
-new-process persistence, default-entry selection, F12 override, graphical text
-disablement, failed writes, corrupt stores, invalid ranges and rescanning. It
-captures `build/kotl-efi/firmware-setup.ppm`. The guest independently verifies the EFI DTB, native execution,
-identity allocation addresses, configuration table lifecycle, unsupported KSI
-calls and IOMMU shutdown after ExitBootServices.
+The graphical suites drive QMP keyboard input, F10/F12 menus, persisted settings,
+ESP/namespace/controller discovery and real GOP writes. Captures remain under
+`build/kotl-efi/`. Storage tests check reset and source-disk preservation.
+Legacy Clipper tests retain their separate PAL/firmware path.
 
-## Remaining work
+## Remaining
 
-Only the primary hart executes firmware. CPU identity mappings use coarse RWX
-leaves; page permissions and F/K stack isolation are incomplete. Resident KSI
-runs on the caller's stack and is not a security boundary. No PAL model, hart
-services, remote fences, interrupt-driven NVMe or MSI remapping are implemented.
-QEMU can warn that MSI-X is unsupported; this driver uses polling. USB is not a
-firmware input or storage path. Time is virtual elapsed time, not a clock/calendar.
+A complete OSF/1 personality (PCB/context switching, exception frames, user
+return, interrupt delivery and HWRPB/SRM) is needed before Linux can boot here.
+Secondary OS scheduling, the full KSI lifecycle, external-image staging,
+authentication/measurement, network boot, USB firmware drivers and virtio-gpu
+remain unsupported. No existing Linux/GRUB OS handoff is claimed by the small
+kernel test. EDK II integration has its own tests and runtime limits in the sibling checkout.
 
-Interrupt-driven event delivery, authenticated variables, complete runtime/boot
-services, full PCI driver binding, device-path LoadImage, ACPI,
-Secure Boot and an OS loader
-remain pending. Required EDK II architecture/toolchain/platform integration is
-also pending. Retaining native firmware memory and passing this test application
-does not establish a general OS runtime ABI or full platform conformance.
-
-## EFI events, timers and input waits
-
-The shared EFI core now implements typed RaiseTPL/RestoreTPL, CreateEvent and
-CreateEventEx, SignalEvent, CheckEvent, CloseEvent, WaitForEvent and SetTimer.
-There are 64 event slots with generation-tagged opaque handles; stale handles do
-not resolve to a reused slot. Supported notification levels are TPL_CALLBACK and
-TPL_NOTIFY. Notifications dispatch in priority order and FIFO order within a
-priority, coalesce while masked, and may close their own event safely. Runtime
-and virtual-address-change events remain unsupported.
-
-Timers accept 100 ns units, relative or periodic operation and cancellation.
-Zero-delay timers fire at the next 1 ms software tick. Periodic catch-up preserves
-phase and coalesces missed notifications. Dispatch occurs from WaitForEvent,
-CheckEvent, RestoreTPL, ReadKeyStroke and Stall, not from hardware interrupts.
-An application which never yields to these entry points cannot receive timer
-callbacks yet. WaitForEvent requires TPL_APPLICATION.
-
-The console publishes a real WaitForKey event. Readiness checks retain the
-unread key; consecutive queued keys and native EFI scan codes are preserved.
-BeforeExitBootServices notifications can change the map, requiring a fresh key.
-Exit notifications run with timers stopped and memory allocation blocked. Event
-groups also notify memory-map and configuration-table changes. Unloading an
-application retires its owned events before executable pages are released.
-
-`make test-events` builds separate applications for timeout, serial input,
-consecutive input, native F10 scan delivery and forty repeated image unloads.
-The main self-test also checks callback ordering, priority masking, grouped
-signaling, capacity, stale handles and exit notifications on both platforms.
-
-## EFI variables and retained runtime support
-
-GetVariable, SetVariable, GetNextVariableName and QueryVariableInfo are available.
-Variables are identified by UTF-16 name plus vendor GUID, with replacement,
-append and deletion support. The bounded store has 32 shared slots, up to 63
-UTF-16 name units plus a terminator, and up to 1024 data bytes per value.
-QueryVariableInfo reports the fixed-slot capacity. Unsupported authenticated,
-hardware-error and enhanced-authentication attributes return EFI_UNSUPPORTED.
-
-Volatile values work on both Clipper and EV9. Native nonvolatile writes require
-`-M kotl-ev9,variables-file=PATH`; without a file backend they return
-EFI_UNSUPPORTED. The run targets use `build/kotl-efi/variables.bin`, overridden
-with `KOTL_VARIABLES=PATH`. This file is separate from F10's 64-byte configuration
-record. Only nonvolatile variables are serialized; volatile values disappear on
-reset. Firmware validates the entire 64 KiB store, including CRC, record bounds,
-names and duplicates, before exposing it. Invalid stores load as empty without
-an implicit write.
-
-A persistent update publishes its in-memory value only after the host commit
-succeeds; failed creates/updates/deletions preserve the old value. QEMU requests
-consistent replacement and durable synchronization through GLib before reporting
-commit success. This is an emulator backing-file service, not NOR flash or a
-wear-leveling/journal implementation. Concurrent VMs must use separate files.
-
-After ExitBootServices, boot-only variables are hidden, volatile runtime values
-are read-only, and nonvolatile runtime values remain writable through the
-separate syscon backend with NVMe disabled. EFI_RT_PROPERTIES_TABLE advertises
-implemented runtime calls and whether persistent writes are available. This
-still requires the retained experimental memory mappings: SetVirtualAddressMap
-and a general OS runtime handoff remain pending.
-
-`make test-variables` checks persistence across processes, runtime writes,
-volatile exclusion, deletion, failed-create/update rollback and malformed stores,
-including mutations with valid CRCs. The core self-test checks the API's sizing,
-attributes, UTF-16 names, enumeration, capacity and runtime visibility rules.
-These variables are not yet interpreted as BootOrder/BootNext/Boot####; F10/F12
-continue to use the current firmware boot manager.
-
-## Relocatable images and nested execution
-
-`firmware/pe.c` supports up to 16 simultaneous images, including a parent running
-its child. LoadImage tries the preferred address first. If that allocation is
-unavailable and IMAGE_FILE_RELOCS_STRIPPED is clear, it allocates other RAM and
-applies the supported relocation records. Fixed images still require their
-preferred address. LoadedImage.ImageBase reports the actual address, with the
-requested ParentHandle retained. A completed handle cannot be started again;
-unload invalidates it, releases pages and retires its owned callbacks. Running
-images and active ancestors cannot be unloaded from their own call stack.
-
-The PE relocation directory supports ABSOLUTE padding, HIGHLOW (32-bit) and
-DIR64 (64-bit). Blocks may be out of page order. Unaligned and page-crossing
-fields are updated bytewise. All records are validated before any fixup is
-applied, including directory backing, block sizes, mapped targets, overlaps and
-attempts to modify relocation metadata or headers. Failures release the reserved
-image slot, pages and temporary validation bitmap. Other PE directories and
-relocation kinds remain unsupported; this is not a general Windows loader.
-
-Application links now use `--emit-relocs`, and make targets pass `--relocatable`
-to `scripts/elf-to-pe.py`. The converter translates retained ELF REFLONG/REFQUAD
-records into PE fixups and resolves linker-created GOT entries from LITERAL
-relocations. It derives the actual GP from verified GPDISP instruction pairs;
-the linker's `_gp` symbol can differ due to GOT alignment. It uses relocation
-provenance, not scanning for address-shaped integers. PC/GP-relative references
-remain relative. Supported inputs are static ELF64 Alpha with one GP/GOT domain;
-TLS, dynamic linking, unknown relocations and unclassified GOT entries are
-rejected. Omitting `--relocatable` still produces an explicitly fixed image.
-
-`make test-relocations` executes parent/child tests on Clipper and EV9 at three
-RAM sizes, plus zero/below-RAM/high preferred bases, eight harts and the graphical
-display. The guest tests 32/64-bit fixups, packed/cross-page pointers, initialized
-function/data pointers, callbacks, BSS reset, fixed-base collisions, 40 repeated
-child loads, image capacity and malformed tables without leaks. Five independent
-converter mutations test metadata/target/symbol/TLS rejection. The fixture also
-contains an address-shaped integer that must not be rebased.
-
-## Boot variables, OS handoff and EDK II
-
-Standard BootOrder/BootNext and GPT/FilePath image loading are now implemented.
-F10 default selection promotes a Boot#### option; F12 Enter overrides once.
-EFI Exit unwinds nested applications, returning copied exit data to StartImage.
-See [../../docs/boot-and-handoff.md](../../docs/boot-and-handoff.md) for limits,
-tests and the verified GRUB/Linux Clipper compatibility boot.
-
-The [EDK II foundation](../../edk2/README.md) builds and boots an ALPHA64
-AutoGen application. A full native EDK II firmware image and native Linux kernel
-port are still required. Other major remaining work includes driver lifecycle,
-concurrent mounted volumes, interrupt-driven events, executable/data permissions,
-a private F-level stack, full KSI services, runtime mappings and the required
-network, USB, security and firmware-update protocols.
+OpenAI Codex assisted the implementation, porting, debugging, tests and docs.
+Original source/file-level notices and upstream licenses are preserved.

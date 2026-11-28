@@ -60,7 +60,7 @@ qemu-kotl:
 kotl-efi:
 	$(MAKE) -C firmware/kotl
 run-kotl-efi: qemu-kotl kotl-efi
-	build/qemu-kotl/qemu-system-alpha -M kotl-ev9,settings-file=$(KOTL_SETTINGS),variables-file=$(KOTL_VARIABLES) -m 128M -smp 8,sockets=1,cores=4,threads=2 -nographic -nic none -bios build/kotl-efi/kotl-efi-flash.bin -drive if=none,id=boot,format=raw,file=build/kotl-efi/esp.img,snapshot=on -device nvme,drive=boot,serial=KOTLBOOT
+	build/qemu-kotl/qemu-system-alpha -M kotl-ev9,part=z1-lite,settings-file=$(KOTL_SETTINGS),variables-file=$(KOTL_VARIABLES) -m 128M -smp 8,sockets=1,cores=4,threads=2 -nographic -nic none -bios build/kotl-efi/kotl-efi-flash.bin -drive if=none,id=boot,format=raw,file=build/kotl-efi/esp.img,snapshot=on -device nvme,drive=boot,serial=KOTLBOOT
 shell-kotl-efi: qemu-kotl kotl-efi
 	build/qemu-kotl/qemu-system-alpha -M kotl-ev9,firmware-args=shell,settings-file=$(KOTL_SETTINGS),variables-file=$(KOTL_VARIABLES) -m 128M -nographic -nic none -bios build/kotl-efi/kotl-efi-flash.bin -drive if=none,id=boot,format=raw,file=build/kotl-efi/esp.img,snapshot=on -device nvme,drive=boot,serial=KOTLBOOT
 test-kotl-efi: qemu-kotl kotl-efi
@@ -75,7 +75,7 @@ KOTL_DISPLAY_DEVICE = bochs-display,addr=2,vgamem=32M,refresh_rate=50000,xres=$(
 KOTL_SETTINGS ?= build/kotl-efi/settings.bin
 KOTL_VARIABLES ?= build/kotl-efi/variables.bin
 run-kotl-efi-display: qemu-kotl kotl-efi
-	build/qemu-kotl/qemu-system-alpha -M kotl-ev9,settings-file=$(KOTL_SETTINGS),variables-file=$(KOTL_VARIABLES) -m 128M -smp 8,sockets=1,cores=4,threads=2 -display $(DISPLAY_BACKEND) -serial stdio -monitor none -nic none -bios build/kotl-efi/kotl-efi-flash.bin -device $(KOTL_DISPLAY_DEVICE) -drive if=none,id=boot,format=raw,file=build/kotl-efi/esp.img,snapshot=on -device nvme,drive=boot,serial=KOTLBOOT,addr=1
+	build/qemu-kotl/qemu-system-alpha -M kotl-ev9,part=z1-lite,settings-file=$(KOTL_SETTINGS),variables-file=$(KOTL_VARIABLES) -m 128M -smp 8,sockets=1,cores=4,threads=2 -display $(DISPLAY_BACKEND) -serial stdio -monitor none -nic none -bios build/kotl-efi/kotl-efi-flash.bin -device $(KOTL_DISPLAY_DEVICE) -drive if=none,id=boot,format=raw,file=build/kotl-efi/esp.img,snapshot=on -device nvme,drive=boot,serial=KOTLBOOT,addr=1
 test-kotl-ui: qemu-kotl kotl-efi
 	$(PYTHON) -u tests/kotl_ui.py
 
@@ -192,3 +192,14 @@ test-relocations: all relocation-apps qemu-kotl kotl-efi
 
 build/image-jump.o: firmware/image-jump.S
 	$(CC) $(CFLAGS) -c $< -o $@
+
+.PHONY: test-kotl-pal
+test-kotl-pal: qemu-kotl kotl-efi
+	$(MAKE) -C firmware/kotl pal-test-apps
+	$(PYTHON) -u tests/kotl_pal.py
+
+KOTL_PAL_MODEL ?= pal
+.PHONY: run-kotl-pal
+run-kotl-pal: qemu-kotl kotl-efi
+	$(MAKE) -C firmware/kotl pal-test-disks
+	build/qemu-kotl/qemu-system-alpha -M kotl-ev9 -m 128M -smp 4,sockets=1,cores=4,threads=1 -nographic -nic none -bios build/kotl-efi/kotl-efi-flash.bin -drive if=none,id=boot,format=raw,file=build/kotl-efi/pal-$(KOTL_PAL_MODEL)-esp.img,snapshot=on -device nvme,drive=boot,serial=KOTLPAL,addr=1

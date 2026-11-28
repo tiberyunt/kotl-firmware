@@ -514,7 +514,8 @@ void services_init(void)
     for (UINTN p = 0; p < total_pages; p++) {
         page_types[p] = p < 0x200000 / 4096          ? EfiReservedMemoryType
                         : p < 0x400000 / 4096        ? EfiRuntimeServicesCode
-                        : p < EFI_ALLOC_START / 4096 ? EfiBootServicesData
+                        : p < 0x600000 / 4096        ? EfiBootServicesData
+                        : p < EFI_ALLOC_START / 4096 ? EfiReservedMemoryType
                                                      : EfiConventionalMemory;
     }
 #else

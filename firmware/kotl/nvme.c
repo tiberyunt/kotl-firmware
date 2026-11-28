@@ -130,19 +130,19 @@ static void setup_dma(void)
        mappings are the six queue/transfer pages; firmware, stacks, the ESP
        read destination and application code are not DMA targets. */
     uint64_t *contexts = (void *)KOTL_RAM, *root = (void *)(KOTL_RAM + PAGE);
-    uint64_t *l2 = (void *)(KOTL_RAM + 2 * PAGE), *l1 = (void *)(KOTL_RAM + 3 * PAGE),
+    uint64_t *l1 = (void *)(KOTL_RAM + 3 * PAGE),
              *l0 = (void *)(KOTL_RAM + 4 * PAGE);
     iommu64(0, 0);
     memset(contexts, 0, 5 * PAGE);
     memset((void *)KOTL_DMA_BASE, 0, KOTL_DMA_SIZE);
-    root[0] = (uint64_t)l2 | 1;
-    l2[0] = (uint64_t)l1 | 1;
+    /* Native 16 KiB now has three levels, with split half roots. */
+    root[0] = (uint64_t)l1 | 1;
     l1[KOTL_RAM >> 25] = (uint64_t)l0 | 1;
     for (unsigned i = 0; i < 6; i++) {
         uint64_t address = KOTL_DMA_BASE + i * PAGE;
         l0[(address >> 14) & 2047] = address | 7;
     }
-    contexts[controller.bdf * 2] = (uint64_t)root | 1;
+    contexts[controller.bdf * 4] = (uint64_t)root | 1;
     barrier();
     iommu64(8, (uint64_t)contexts);
     iommu64(0x18, 0);

@@ -35,7 +35,7 @@ def nvme(path, slot=1, namespace=None, sector=512):
 def run(name, extra=(), mode='', ram='128M', smp='1', required=(), error=None,
         commands=(), reset=False):
     global passed
-    machine = 'kotl-ev9' + (',firmware-args=' + mode if mode else '')
+    machine = 'kotl-ev9,part=z1-lite' + (',firmware-args=' + mode if mode else '')
     cmd = [str(QEMU), '-M', machine, '-m', ram, '-smp', smp, '-nographic',
            '-nic', 'none', '-bios', str(OUT / 'kotl-efi-flash.bin'), *extra]
     proc = subprocess.Popen(cmd, cwd=ROOT, stdin=subprocess.PIPE,
@@ -93,7 +93,7 @@ def run(name, extra=(), mode='', ram='128M', smp='1', required=(), error=None,
 
 def main():
     complete = ('ALPHA EFI SELFTEST COMPLETE', 'PASS: ExitBootServices and runtime shutdown',
-                'KSI: native model selected; runtime SYSTEM_OFF')
+                'KSI: firmware ownership released; runtime SYSTEM_OFF')
     for ram in ('64M', '128M', '256M'):
         run('embedded-' + ram, mode='selftest', ram=ram, required=complete)
     application = (OUT / 'BOOTAXP64.EFI').read_bytes()

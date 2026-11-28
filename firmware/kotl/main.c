@@ -95,14 +95,15 @@ void firmware_main(void)
 {
     serial_init();
     puts_serial("Kotl native EFI experimental firmware\n");
-    if (KOTL_READ_CSR(0) != 0x102 || !native_boot_info ||
+    if (KOTL_READ_CSR(0x108) != 0 || !native_boot_info ||
         native_boot_info->magic != KOTL_BOOT_MAGIC)
         kotl_fatal();
     KSI_RESULT version = ksi_call(KSI_VERSION, 0);
     if (version.error || version.value != 0x10000 || ksi_call(KSI_PROBE, KSI_TIME).value != 1)
         kotl_fatal();
-    puts_serial("PASS: K-level native firmware and resident KSI services\n");
+    puts_serial("PASS: physical F-level UEFI and retained KSI services\n");
     services_init();
+    kotl_pal_init();
     settings_load();
     display_init();
     if (native_boot_info->boot_mode == 0) {

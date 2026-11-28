@@ -19,13 +19,12 @@ _start:
 #ifdef KOTL_NATIVE
  lda $1, native_boot_info
  stq $16, 0($1)
- lda $1, kotl_trap_entry
- .long 0x74010001
+ /* Stage one retains the F exception vector. */
 #endif
  lda $27, firmware_main
  jsr $26, ($27), firmware_main
 #ifdef KOTL_NATIVE
- .long 0x04000001
+ br $31,.
 #else
  call_pal 0
 #endif
@@ -35,3 +34,9 @@ _start:
 stack_bottom:
 .skip 65536
 stack_top:
+
+#ifdef KOTL_NATIVE
+#include "kotl/ksi-call.S"
+#endif
+
+.section .note.GNU-stack,"",@progbits

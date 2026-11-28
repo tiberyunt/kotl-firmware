@@ -14,3 +14,9 @@ efi_entry:
  lda $30, 16($30)
  ret $31, ($26), 1
 .end efi_entry
+
+#ifdef KOTL_NATIVE
+#include "kotl/ksi-call.S"
+#endif
+
+.section .note.GNU-stack,"",@progbits

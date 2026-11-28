@@ -718,8 +718,8 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *table)
     }
     require(dtb && kotl_parse_fdt(dtb, &native_platform),
             "FDT published through EFI configuration table");
-    require(KOTL_READ_CSR(0) == 0x102 && !(KOTL_READ_CSR(5) & 0x3fff),
-            "native K privilege and 16 KiB identity page tables");
+    require(KOTL_READ_CSR(0x108) == 0 && KOTL_READ_CSR(0x122) == 1,
+            "physical F-mode UEFI and hardware walker available");
     KSI_RESULT version = ksi_call(KSI_VERSION, 0);
     require(version.error == 0 && version.value == 0x10000 &&
                 ksi_call(KSI_PROBE, KSI_TIME).value == 1,
@@ -727,7 +727,7 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *table)
     require(ksi_call(KSI_PROBE, 0xdead).value == 0 && ksi_call(0xdead, 0).error == KSI_UNSUPPORTED,
             "unsupported KSI functions rejected");
     require(ksi_call(KSI_MODEL_SELECT, 1).error == KSI_UNSUPPORTED,
-            "unimplemented PAL model is not selected");
+            "MODEL_SELECT requires a prepared PAL handoff");
 #endif
     if (info->DeviceHandle)
         disk_tests(info->DeviceHandle);

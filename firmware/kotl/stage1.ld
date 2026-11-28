@@ -10,6 +10,8 @@ SECTIONS {
  _gp = ALIGN(16) + 0x8000;
  . = 0x01000000;
  __bss_start = .;
+ .bootinfo (NOLOAD) : { *(.bootinfo) } :data
+ ASSERT(ADDR(.bootinfo) == 0x01000000, "boot information ABI address")
  .bss (NOLOAD) : { *(.bss .bss.*) *(.sbss .sbss.*) *(COMMON) } :data
  . = ALIGN(16); __bss_end = .;
  /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }

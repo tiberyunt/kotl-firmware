@@ -1,229 +1,278 @@
-# Kotl EV9 QEMU bring-up bindings, draft 0.1
+# Kotl EV9 QEMU bindings, revision 2026-11-28
 
-These are provisional implementation definitions for the supplied **Kotl EV9
-Platform Specification, draft 0.1**. They fill the missing register/encoding
-pieces needed for executable tests. They are not amendments to that document,
-a frozen ISA, a UEFI registration, or a platform conformance statement.
+The three supplied Markdown specifications define the intended architecture.
+This document records executable bindings where those specifications still
+leave binary encodings open. Such fields are provisional, not new normative
+architecture. This revision replaces the earlier direct-CSR binding and is
+incompatible with its firmware. Standard Clipper/Alpha behavior is unchanged.
 
-The provided Alpha architecture manual remains the reference for legacy Alpha
-behavior. Native EV9 deliberately changes that privileged environment. The
-existing Clipper firmware remains a legacy PAL-based test platform.
+## Reset, parts and discovery
 
-## Reset and discovery
+Hardware reset: PC=0, F privilege, translation off, FMODEL=0, interrupts off.
+All integer registers are cleared, then R16=hart ID and R17=physical DTB address
+are installed for the provisional firmware reset ABI. Secondary harts stop.
+The DTB occupies a reserved 1 MiB SRAM window at 0x01100000. RAM begins at
+0x100000000; supported size is 64 MiB through 128 GiB.
 
-Primary hart: PC=0, privilege F, MMU off, interrupts off. Secondary harts are
-stopped. Integer arguments: a0=hart ID, a1=physical DTB pointer. A released
-secondary additionally receives a2=mailbox argument. General registers are
-cleared before those arguments are installed. The test stack is in SRAM;
-software establishes its own stack and GP.
+`part=21564` (ID 2, default) permits four single-thread cores; `part=z1` (ID 3)
+permits sixteen single-thread cores. `part=z1-lite` (ID 1, test part) permits
+four cores, two threads each. Smaller configurations are allowed, with one
+socket. `model=pal|full-pal` is a boot request reported at syscon+0x60; it does
+not change the architectural reset state. Part, topology and model are locked
+when the machine is created. FMODEL is committed by F-level software once.
 
-The DTB is at 0x01100000 in SRAM, with a reserved 1 MiB window. It describes
-`kotl,ev9-qemu-draft01`, CPU nodes and `cpu-map`, native MMU parameters, and the
-platform address windows. Child compatibility strings ending in `draft01`
-identify these provisional controller layouts. Standard UART and ECAM bindings
-retain their usual compatibility names. RAM starts at 0x100000000.
+The root DTB compatible is `kotl,ev9-qemu-draft02`. CPU properties describe
+48-bit native VA, 44-bit PA, all three page granularities and legacy 43-bit VA.
+Local CPU interrupt-controller nodes identify IPI=0, timer=1 and external=2;
+KAIA is the external parent, not the source of timer/IPI causes. PCI properties
+discover requester contexts, MSI remapping and the private MSI doorbell.
 
-## Native instruction encoding
+## Instructions and traps
 
-Alpha instruction size and integer register numbering are unchanged. These
-encodings are specific to the experimental `ev9` CPU; legacy CPUs retain the
-old behavior.
+Use the Architecture Specification encodings: PR_READ opcode 0x19 (Ra result),
+PR_WRITE 0x1d (Rb source), index 15:0; XRET is exactly 0x78000000. All three
+instructions are F-only. The retired 0x01 ERET/WFI/service encodings trap.
+PLD/PST are opcodes 0x1b/0x1f and F-only. Until their complete binary format is
+frozen, the emulator supports displacement bits 11:0 and mode bits 15:12:
+0/1 physical signed-longword/quadword; 8/9 access through the interrupted
+level's translation. Other modes trap. Stores validate translation for every
+byte before writing. Physical MMIO bus errors may still have device effects.
 
-| Operation | Encoding |
+AMO opcode 0x04 uses operation bits 11:8, size bit 7 and ordering bits 6:5.
+Ra is operand/expected, Rb address, Rc old result and CAS replacement on entry.
+CAS128 uses even pairs (including R30/R31). BITM is opcode 0x05. RMB, SPECB,
+ICSYNC and cache operations follow the MISC encodings in the specification.
+TCG currently supplies stronger barriers than the minimum requested AMO
+ordering. Cache operations check permissions; CBZERO writes a 64-byte line.
+The functional emulator does not simulate cache replacement or speculation.
+
+Before PAL activation, traps enter FVEC. After activation they enter FPALBASE
+plus reset 0x0000, machine check 0x0100, interrupt 0x0200, synchronous exception
+0x0300, reserved opcode 0x0400, privileged PAL 0x2000+64*function or unprivileged
+PAL 0x3000+64*(function-0x80). FEPC is the faulting instruction; the PAL image
+advances it when completing a CALL_PAL. Every entry clears the LL/SC reservation.
+
+Full-PAL hides EV9 instructions at K/U, with IMPLVER=3 and legacy AMASK there;
+F retains all implemented hardware assistance and IMPLVER=9. PAL mode exposes
+EV9 instructions to K/U. Only enabled IMB/RDUNIQUE/WRUNIQUE bypass trap entry.
+
+## Privileged register implementation
+
+The register indices follow the supplied architecture. Every PR access is
+F-only, including registers that hold the kernel's virtualized state.
+
+| Indices | Registers |
 | --- | --- |
-| CSR read | opcode 0x19, destination Ra in bits 25:21, CSR ID in bits 15:0 |
-| CSR write | opcode 0x1d, source Rb in bits 20:16, CSR ID in bits 15:0 |
-| ERET | 0x04000000 (opcode 0x01, function 0) |
-| WFI | 0x04000001 |
-| K-to-F service trap | 0x04000002 |
-| Atomic RMW/CAS | opcode 0x02; Ra=value/desired, Rb=address, Rc=old value/expected |
+| 000..009 | PHARTID, PSTATUS, PEPC, PCAUSE, PTVAL, PVEC, PSCRATCH0/1, PIE, PIP |
+| 00A..00E | PPTBRU, PPTBRK, PASN, PUNIQUE, PCOUNTEREN |
+| 010..012 | PTIME, PCYCLE, PINSTRET (read only) |
+| 018..01A | PTLBIVA, PTLBIASN, PTLBIALL (write commands; read zero) |
+| 100..107 | FSTATUS, FEPC, FCAUSE, FTVAL, FVEC, FSCRATCH, FEDELEG, FIDELEG |
+| 108..10F | FMODEL, FPALBASE, FCAP, FPARTID, FPALID, FPALSIZE, FPALINFO, FFASTPAL |
+| 110..11F | FPMA0..15 |
+| 122 | FWALK (hardware walking only, reads/writes 1) |
+| 140..147 | FSCRATCH0..7; FSCRATCH aliases FSCRATCH0 |
 
-Atomic function bits are 11:5. Functions 0..5 are ADD, SWAP, AND, OR, XOR and
-CAS at 64 bits; 0x10..0x15 select their 32-bit variants. Old 32-bit values are
-sign-extended. CAS reads the expected value from Rc and returns the actual old
-value there. Function 0x20 performs 128-bit CAS: Ra/Ra+1 are the desired low/high
-halves and Rc/Rc+1 are expected low/high halves and returned old halves. Ra and
-Rc must be even and at most 28. The address must be naturally aligned.
-Bits 12 and 13 request acquire/release; the prototype currently applies full
-sequentially consistent barriers for all combinations. Bits 15:14 are reserved.
+Undefined indices, read-only writes, nonzero delegation and unavailable refill
+commands trap. Performance/debug registers are not yet implemented.
+PSTATUS allows IE bit 0, previous IE bit 1, previous K/U level bit 2,
+FS bits 4:3, SUM 5 and MXR 6;
+no MMU enable bit exists. K/U always translate; F never does. FSTATUS's
+**provisional** saved-state encoding is IE bit 0, level bits 9:8 (U=0,K=1,F=3).
+Nested F handlers must save their outer trap state themselves.
 
-CALL_PAL IMB (0x86) remains available as instruction-stream synchronization.
-Other CALL_PAL functions trap to the native handler; they do not enter PALmode
-or implement the legacy privileged PAL functions. VAX FP operations trap rather
-than executing the inherited legacy implementation.
+PIE/PIP use software IPI bit 0, timer 1, external 2 (bits 3/4 reserved for
+additional interrupt classes). PIP bit 0 is writable; wired bits follow inputs.
+F masks ordinary interrupts. K requires PSTATUS.IE; U accepts enabled sources.
 
-## CSRs
+FCAP is a positive presence bitmap: native features 0x003f0307 plus legacy
+hardware walker bit 33. Optional software refill bit 32 and virtualization bit
+34 are clear. AMASK is inverted. PTIME uses 24 MHz virtual time; PCYCLE/RPCC use
+100 MHz for Z1-lite and 2.5 GHz for the other parts. PINSTRET counts translated
+completed instructions. QEMU does not model performance timing. PASN changes
+and ASN invalidations conservatively flush local TLB state. PTLBIVA flushes
+all 4 KiB pieces of the containing 16 KiB region; this can over-invalidate.
 
-All CSRs except TIME require K or F privilege. V privilege is reserved and
-rejected. Undefined/read-only writes trap. FTVEC is writable only from F.
+FPALBASE and FPALINFO are F-writable only before activation. FPALSIZE is read
+only, derived when FPALBASE is written from an explicit matching F-only RX PMA
+of 64 KiB through 4 MiB. FMODEL accepts 1/2 once and requires retained code to
+be F-only, readable/executable and nonwritable under all intersecting PMAs.
+Subsequent PMA writes cannot remove that protection. Full-PAL initializes
+FFASTPAL=1. FPALID is provisionally the physical pointer FPALINFO+0x180 to an
+identification record, rather than packing an entire image identity into a PR.
 
-| ID | Name | Meaning |
-| --- | --- | --- |
-| 0 | STATUS | bit 0 interrupt enable; bit 1 MMU enable; bit 2 supervisor user-memory data access; bits 9:8 privilege (U=0,K=1,F=3) |
-| 1 | TVEC | Native trap handler PC, aligned to four bytes |
-| 2 | EPC | Exception return PC |
-| 3 | CAUSE | Native exception code; bit 63 marks an external interrupt |
-| 4 | TVAL | Fault VA, or CALL_PAL/service function code |
-| 5 | PTBR | Physical root page table and granule selector in bit 0 |
-| 6 | ASN | 16-bit address-space number; changing it flushes the software TLB |
-| 7 | SCRATCH | Software scratch |
-| 8 | HARTID | Read-only hart ID |
-| 9 | TIME | Read-only KTIMER count |
-| 10 | FREQUENCY | Read-only 24000000 Hz |
-| 11 | TLBI | Any write invalidates local translations; reads zero |
-| 12 | SAVED_STATUS | Status restored by ERET |
-| 13 | FTVEC | Firmware service trap PC |
+## PMA descriptor encoding (provisional)
 
-Exception causes currently match QEMU Alpha's local numbers: machine check 1,
-external interrupt 4 (plus bit 63), translation/protection fault 5, alignment 6,
-illegal/privileged instruction 7, arithmetic 8, FP-disabled 9, and PAL/service
-trap 10. This is a draft software ABI, not an assigned architectural numbering.
-
-A trap saves EPC, CAUSE, TVAL and STATUS, disables interrupts, and enters K
-(or remains F when already F). An explicit K-to-F service trap enters FTVEC at
-F privilege and sets TVAL=0x100. ERET restores EPC/STATUS and may return only to
-an equal or lower privilege level. Software must save trap CSRs before nesting;
-there is only one hardware save set. No integer register is implicitly saved.
-Firmware is responsible for implementing the KSI service dispatcher.
-
-## Native MMU and IOMMU PTEs
-
-64-bit entries, with physical address bits 47:14, and low flags:
-
-| Bit | Meaning |
+| Bits | Meaning |
 | --- | --- |
-| 0 | Valid |
-| 1 | Read |
-| 2 | Write; requires Read |
-| 3 | Execute |
-| 4 | User |
-| 5 | Accessed, hardware updated |
-| 6 | Dirty, hardware updated |
-| 7 | Global (reserved for later TLB tagging optimization) |
-| 8 | Device attribute (functional prototype does not simulate cache policy) |
-| 9 | Write-combining attribute (same limitation) |
+| 43:16 | Physical base (64 KiB precision) |
+| 5:0 | log2 region size, 16..44 |
+| 6/7/8 | Read/write/execute |
+| 9/10/11 | U/K/F permission masks |
+| 12/13/14 | Cacheable/atomic-capable/device |
+| 15 | Valid |
+| 63:44 | Reserved zero |
 
-Bits 13:10 and 63:48 must be zero. A valid entry without R/W/X is a next-level
-table pointer. The four levels use VA bit 47 (one-bit root index), bits 46:36,
-35:25, 24:14, and a 14-bit offset. Virtual addresses must be sign-extended from
-bit 47. Leaves are permitted at the bottom three levels, giving 16 KiB, 32 MiB
-and 64 GiB mappings. Physical leaf bases must have the corresponding alignment.
-The walker checks permissions and updates A/D bits before filling a translation.
-QEMU caches 4 KiB pieces internally for both native granules.
+Regions are base+size intervals; matching permissions intersect restrictively.
+No match denies access. Atomic operations require cacheable, atomic-capable,
+non-device RAM, additionally restricted by the page attribute.
+Reset entries 0..12 cover ROM, SRAM, controllers, UART/on-SoC windows, ECAM,
+PCI apertures and bootstrap F-only RAM. Entries 13..15 are retained code,
+scratch and information descriptors for the developer loader. The provisional
+DMA policy excludes every explicit F-only region; the broad
+bootstrap F-only RAM entry does not deny all DMA. Firmware must program and
+retain the reserved descriptors consistently on all harts. Firmware may
+consolidate low MMIO regions to free descriptors for retained EFI code/data. DMA checks the union
+of retained restrictions across harts. PMA writes invalidate IOMMU mappings;
+fault/invalidation queues recheck their backing memory on every use, so a
+region protected after queue setup cannot become a DMA back door.
 
-K execution from User pages is denied. K data access to User pages requires
-STATUS bit 2. U access requires the User flag. Changing STATUS, PTBR or ASN
-flushes local translations. Device/cache attributes and Global are represented
-in the draft format but no cache hierarchy or global-ASN optimization is modeled.
+## CPU and DMA page tables
 
-## System controller: 0x02000000, 16 MiB
+Native roots split the two 47-bit halves of a canonical 48-bit VA. PPTBRU/K
+bits 1:0 select 0=16 KiB, 1=4 KiB, 2=8 KiB (3 invalid); bit 2 is LEGACY.
+Root alignment matches the granule except split legacy roots, aligned to 4 KiB.
+Native 4 KiB uses widths 8/9/9/9, native 8 KiB 4/10/10/10, native 16 KiB
+11/11/11. Valid nonleaf PTEs have R/W/X clear. Leaf permissions and aligned
+superpages follow the architecture. The current physical width is 44 bits.
 
-Naturally aligned 64-bit accesses.
+Native PTE: V0,R1,W2,X3,U4,G5,A6,D7, ATTR9:8, RSW11:10, address47:12, C63.
+ATTR values 0 normal, 1 device, 2 write-combining, 3 non-cacheable restrict PMA
+attributes; AMOs require ATTR=0. Hardware updates A/D atomically. W without R
+and unimplemented physical-address bits fault. Cache policy has no timing model.
 
-| Offset | Access | Meaning |
-| --- | --- | --- |
-| 0x00 | RO | Identity 0x004b4f544c455639 |
-| 0x08 | RO | Register ABI 0x00010000 |
-| 0x10 | RO | Hart count |
-| 0x18 | RO | Reset/debug entry PC |
-| 0x20 | RO | DTB address |
-| 0x28 | RO | DRAM base |
-| 0x30 | RO | DRAM byte length |
-| 0x38 | RO | Bring-up capabilities 0x1f: native CPU, KAIA, KTIMER, PCIe, translating IOMMU |
-| 0x100 | WO | 1=power off, 2=system reset, 0x3333=test failure shutdown |
+Legacy uses canonical 43-bit VA and original Alpha PTEs: PFN63:32 multiplied
+by 8192, V0, fault bits 1/2/3, read permissions 8/9, write permissions 12/13.
+Software bits, including Linux bits 17/18, are preserved. Native A/D bits are
+never written into legacy PTEs. PPTBRU points at the original root's first
+512 entries; PPTBRK points 4096 bytes later. The walker indexes 9/10/10 bits
+per half. Full-PAL forces legacy format; explicit LEGACY also works in PAL mode.
 
-Hart mailbox n is at 0x1000+n*32: entry +0, argument +8, started status +16,
-command +24. Writing command 1 releases a stopped hart at a four-byte-aligned
-entry in flash or DRAM. A running hart cannot be restarted this way. WFI does
-not make the hart eligible for restart. Stop/suspend and model selection are
-not implemented here; they require firmware KSI policy.
+## Board MMIO
 
-## KAIA: 0x03000000, 16 MiB
+All described controller registers are little endian. Syscon, timer and IOMMU
+use naturally aligned 64-bit accesses; KAIA uses 32-bit control registers and
+64-bit pending/enable words. These remain provisional controller bindings.
 
-Source IDs 1..1023, zero reserved. Distributor arrays use 32-bit entries:
-route-to-hart at 0x0000+id*4, priority at 0x1000+id*4, edge flag at
-0x2000+id*4 (0=level,1=edge). Priorities 1..255 are enabled priorities; 0 masks
-the source. Highest priority wins, with lower source ID breaking ties.
+| Physical window | Device |
+| --- | --- |
+| 00000000..00FFFFFF | 16 MiB ROM/XIP window (64 MiB backing pending) |
+| 01000000..011FFFFF | 2 MiB SRAM; upper MiB reserved for DTB |
+| 02000000 | Syscon |
+| 03000000 | KAIA, 1024 slots, source 0 reserved |
+| 04000000 | KTIMER, 24 MHz |
+| 10000000 + n*10000 | Four 16550 UARTs, byte accesses |
+| 30000000 | IOMMU |
+| 40000000 | PCIe ECAM |
+| 50000000 | PCI PIO aperture |
+| 80000000 | PCI32 MMIO aperture |
+| 100000000 | RAM |
+| 10000000000 | PCI64 MMIO aperture |
 
-Hart file n: 0x10000+n*0x1000. Claim at +0 is 32-bit. Software inject/clear at
-+0x40/+0x48 are 32-bit source IDs. Pending and enable bitmaps are 16 naturally
-aligned 64-bit words at +0x100 and +0x200. Bit zero stays disabled. Claim clears
-software/edge pending sources; level interrupts remain pending until the device
-is deasserted. CPU interrupt delivery additionally requires STATUS.IE.
+Syscon +00 identity, +08 ABI version, +10 hart count, +18 reset entry, +20 DTB,
++28 RAM base, +30 RAM size, +38 capabilities, +60 requested model (1/2).
+Write +100: 1 shutdown, 2 reset, 0x3333 failed-test shutdown. Mailbox
++1000+32*hart has entry +0, argument +8, started +10, command +18 (1=start).
+Starts require an F caller. Active PAL starts enter FPALBASE with the same
+PAL/PMA state, R16=Info, R17=hart, R18=1; other GPRs zero. Before activation,
+the earlier firmware entry/argument binding applies. Full-PAL excludes siblings.
++6000 writes 1/2 perform global TLB/translated-code invalidation for the test ROM.
 
-Wired IDs: UARTs 1,9,17,25; timer 2 per hart; IPI 3 per hart; IOMMU fault 4 to
-hart zero; PCI INTx 32..35 using GPEX swizzling. Software IRQ injection is a CPU
-facility. PCI MSI/interrupt remapping is not implemented, so DMA into these
-files is denied.
+KAIA +4*source route, +1000+4*source priority, +2000+4*source edge flag.
+Per-hart file +10000+1000*hart: +00 claim, +40 inject, +48 clear/ack,
++100..178 pending words (RO), +200..278 enable words (RW). Level sources
+remain pending while asserted, including IOMMU fault source 4. MSI destinations
+are restricted to sources 64..1023. UARTs/PCI INTx use the wired routes.
+KTIMER +0 count, +8 frequency, +100+8*hart comparator (UINT64_MAX disables),
++1000+8*hart software IPI bit. Timer and IPI feed local CPU causes directly.
 
-## KTIMER: 0x04000000, 16 MiB
+## IOMMU context v2 and queues (provisional)
 
-64-bit counter +0, frequency +8. Per-hart compare at +0x100+8*n; UINT64_MAX
-cancels a timer. An expired compare injects source 2 into that hart. Setting a
-new compare clears its pending timer interrupt. IPI set/clear is at
-+0x1000+8*n (bit 0). Native TIME reads the same 24 MHz virtual-time counter.
+Control +00 bit 0 enables translation; +08 context base (16 KiB aligned),
++10 write invalidates all; +18 fault count/clear, +20 last address, +28 last
+info. Context address = base+32*RID, with four little-endian 64-bit words:
 
-## IOMMU: 0x30000000, 16 MiB
+1. Lower root address, enable bit 0, granule bits 2:1 (0=16K,1=4K,2=8K),
+   LEGACY bit 3 (requires 8K).
+2. Upper root address with matching enable/format.
+3. MSI table address (4 KiB aligned), enable bit 0.
+4. Reserved zero.
 
-Naturally aligned 64-bit register accesses. +0 enables translation (bit 0);
-reset is disabled/default-deny, not identity bypass. +8 is a 16 KiB-aligned
-context-table base. +0x10 invalidates all DMA translations. +0x18 is the fault
-count (any write clears count and fault interrupt). +0x20 is the latest fault
-IOVA; +0x28 is requester ID in bits 31:16 and read/write flags in bits 1:0.
-The counter and latest-fault registers are a bring-up facility, not the queued
-fault reporting required by the full specification.
+IOVAs are unsigned 48-bit native or 43-bit legacy, split at bit 47/42 into
+per-half roots. Root alignment is the granule, or 4 KiB for legacy half-roots.
+Page tables use the CPU formats above. DMA targets, queues and page tables must
+be ordinary RAM outside retained PAL regions; arbitrary MMIO DMA is denied.
+Updating a context/PTE requires an invalidation before reuse.
 
-Contexts are indexed by 16-bit PCI requester ID, 16 bytes each. The first word
-contains the native page-table root in bits 47:14 and enable bit 0. The second
-word is reserved. The walker uses the CPU's 16 KiB/large-page PTE shape, checks
-read/write permission, and updates A/D bits. It accepts unsigned 48-bit IOVAs
-and only allows translations whose resulting 16 KiB page lies entirely in
-DRAM. Table/context accesses must also be within DRAM. MMIO DMA and MSI injection
-are denied. Software invalidates after changing tables or contexts. There are
-no passthrough mappings, 8 KiB domains or device assignment APIs yet.
+The one exception is a private, requester-specific MSI IOVA 0x03F00000. It
+accepts aligned 32-bit writes, payload 0..255; reads and other widths/offsets
+fault. A remap table has 256 64-bit entries: valid bit 0, destination hart 7:4,
+source 25:16, remaining bits zero. Missing contexts/tables/entries deny delivery.
+Real PCI MSI and MSI-X use this path, so one requester cannot choose another's
+interrupt destinations.
 
-## PCIe and UART
+Fault ring registers: +30 base, +38 power-of-two entry count, +40 producer head
+(RO), +48 consumer tail, +50 overflow (write zero clears). Records are 32 bytes:
+address, RID/access info, fault sequence and reserved zero. Bases are 32-byte
+aligned; ring sizes are 2..4096 entries. Enable/disable before changing a base.
+Faults or overflow hold KAIA source 4 until drained/cleared; acknowledging the
+interrupt file alone cannot suppress an asserted level.
 
-GPEX ECAM covers 256 buses at 0x40000000. PIO registers map the first 64 KiB
-of the platform aperture at 0x50000000. PCI MMIO windows are identity mapped:
-0x80000000 for 2 GiB, and 0x10000000000 for 1 TiB. Firmware/OS configures BARs;
-there is no legacy PALcode PCI setup. NVMe and xHCI use QEMU's existing device
-implementations through this host bridge and the requester IOMMU.
+Invalidation ring: +60 base, +68 count, +70 consumer head (RO), +78 producer tail,
++80 status (RO), +88 completed token (RO), +90 capabilities=7. Descriptors are
+four 64-bit words: op bits 7:0 (1=global,2=RID,3=fence), RID bits 31:16 only
+for op 2; words 1/2 zero; word 3 completion token. Execution is synchronous and
+ordered. Status 1 bad configuration, 2 malformed descriptor, 3 inaccessible
+queue memory, 4 overrun. Repair a bad descriptor and rewrite the same tail to
+retry; no failed descriptor is consumed. Disable resets queue state.
 
-UART n is at 0x10000000+n*0x10000, standard 16550 register stride 1, clock
-1.8432 MHz, firmware baud 115200 8N1. Only the UART's actual register bytes are
-implemented inside each reserved 64 KiB slot. No ISA I/O decoding is involved.
+## PAL image developer loader and retained information
 
-## Explicitly pending
+`pal-image=FILE` cannot be combined with bios/kernel/initrd. The test ROM starts
+at PC=0/FMODEL=0, writes protected PAL registers and commits FMODEL before
+XRET to PAL reset. R16 points at Info, R17=hart, R18=0 on primary reset; all
+other GPRs are zero. Each hart establishes its own stack and execution state.
 
-EDK II, complete KSI services, PAL compatibility/8 KiB regime, remaining
-EV9 ISA additions, MSI remapping, fault queues, runtime/secure boot and the
-remaining platform peripherals. Migration is blocked while the state ABI is
-unversioned. CPU cache/SMT timing and the formal memory model are not simulated.
+KPAL v1 uses the canonical digest/range rules in the Platform Specification.
+This path is Permissive only: hashes and constraints are checked, signatures
+are not authenticated. No persistent policy exists; minimum SVN is zero for
+all personalities. It is not a replacement for UEFI staging/ExitBootServices,
+Enforce policy, TPM measurement or PAL image installation/confirmation.
 
-## Resident firmware service subset
+Info is read-only F memory, 64 KiB aligned. The **provisional** little-endian
+layout below fills currently unspecified binary structure details:
 
-These provisional firmware bindings are implemented by `firmware/kotl/`, rather
-than by QEMU's service-trap transport. K-level callers execute `KSICALL`
-(0x04000002), with function in r16 and argument in r17; r0 returns a signed
-error and r1 returns the result. Other integer registers are preserved.
+| Offset | Value |
+| --- | --- |
+| 000/004 | u32 PPI version 0x10000 / fixed header size 0x100 |
+| 008 | u64 hardware capabilities |
+| 010/018 | u64 hart count / pointer to u64 hart ID array at +100 |
+| 020/028 | u64 retained code base / allocated size |
+| 030/038 | u64 scratch base / requested bytes per hart |
+| 040/048/050 | u64 KAIA / timer / UART addresses |
+| 058/060 | u64 memory-map pointer (+200) / retained KSI entry (ROM+100) |
+| 070/080 | u64 DTB / OS handoff pointer (zero in this test agent) |
+| 180 | identity: u32 personality, u32 SVN, u64 image version, u32 PPI, u32 flags, 48-byte digest |
+| 200 | u64 memory-map count, then 32-byte {base,size,usage,reserved} entries; usage 1 retained, 0 free |
 
-| Function | ID | Behavior |
-| --- | ---: | --- |
-| VERSION | 0 | Returns 0x10000 |
-| PROBE | 1 | Argument is function ID; result 1 if implemented, otherwise 0 |
-| SYSTEM_OFF | 2 | Powers off the machine |
-| SYSTEM_RESET | 3 | Resets the machine |
-| CONSOLE_PUTC | 4 | Writes argument's low byte |
-| CONSOLE_GETC | 5 | Reads a byte; error -6 if none available |
-| TIME | 6 | Returns the 24 MHz counter |
-| MODEL_SELECT | 15 | Argument 0 selects native mode idempotently; PAL mode is unsupported |
+Each scalar not marked u32 is u64; unspecified bytes are zero. Code size is
+rounded to a power of two for the PMA descriptor, scratch covers all harts,
+and at least the first 16 MiB RAM remains firmware-reserved. HWRPB, ACPI/SMBIOS,
+TPM log and OS handoff structures are not supplied by this agent.
 
-Successful calls return error 0; unsupported calls return -2. Unknown functions
-are not advertised by PROBE. Model selection records native policy; it does not
-implement a PAL transition or a secure privilege boundary. The firmware runs
-only the primary hart and leaves secondary harts parked. See its README for
-retained-memory and execution restrictions.
+The test ROM uses direct F calls, R16=function, R17.. arguments, R0=value,
+R1=error, R26 return address. It clobbers R2/R3. Function numbers are explicitly
+provisional: 0 version, 1 probe, 2 off, 3 reset, 4 putc, 5 nonblocking getc
+(-1 value if empty), 6 time, 7 hart start, 10 status, 11 set local timer,
+12 send IPI, 13 remote TLB flush, 14 remote instruction synchronization.
+Unsupported functions return error -2; bad hart IDs return -3. Hart start takes
+ID, entry and argument; active PAL hardware always enters its reset vector.
+Stop, suspend, MODEL_SELECT and runtime/image management are not exposed.
+Only PAL/F software may call this physical entry; OS software needs PAL calls.
+
+The following retained emulator backends document existing wire formats from
+the earlier companion firmware. They remain available for the firmware port;
+they do not establish that the earlier firmware runs on the revised CPU ABI.
 
 ## Draft firmware keyboard mailbox
 
@@ -241,7 +290,7 @@ scan codes 0x13/0x14/0x16, UP/DOWN 1/2, and RIGHT/LEFT 3/4.
 No interrupt is generated. This is an explicit draft platform extension for
 firmware interaction, not a claimed USB/PS2 or full input-device implementation.
 
-Bochs display uses the existing QEMU PCI endpoint. Native firmware reserves
+Bochs display uses the existing QEMU PCI endpoint. The earlier companion firmware reserved
 the top 32 MiB of PCI32 MMIO for its framebuffer/register BARs; the active NVMe
 controller uses the bottom aperture. These are firmware allocation choices,
 not additional fixed hardware registers.
@@ -305,17 +354,9 @@ This is an explicitly provisional serialization/backing interface, separate
 from the standard EFI variable API. It has no authentication or flash journal.
 ### Experimental RTC service
 
-The EDK II platform driver uses 64-bit syscon registers at offset `0x5000`:
+The earlier EDK II platform driver used 64-bit syscon registers at offset `0x5000`:
 UTC Unix seconds (read/write signed, range 1900–9999), `0x5008` host nanoseconds
 (read only), `0x5010` capability version 1, and `0x5018` write status (0 success,
 1 out of range). Setting seconds adjusts an offset against QEMU's host clock.
 The offset survives a guest reset, but is not persisted across QEMU processes.
 This is an emulator service for the port, not the proposed physical I2C RTC.
-Native PTBR bit 0 selects the translation granule. Zero uses the existing
-16 KiB tables and one selects 4 KiB tables with 512 entries per level. Root
-addresses use the matching page alignment. QEMU's internal TLB uses 4 KiB
-entries; the Clipper/PAL walker continues to decode its 8 KiB page tables.
-Native PTBR bit 0 selects the translation granule. Zero uses the existing
-16 KiB tables and one selects 4 KiB tables with 512 entries per level. Root
-addresses use the matching page alignment. QEMU's internal TLB uses 4 KiB
-entries; the Clipper/PAL walker continues to decode its 8 KiB page tables.

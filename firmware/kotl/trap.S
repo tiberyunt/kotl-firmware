@@ -8,6 +8,6 @@ kotl_trap_entry:
  ldgp $29, 0($27)
  lda $27, kotl_fatal
  jsr $26, ($27), kotl_fatal
- .long 0x04000001
+ .long 0x47ff041f
 .end kotl_trap_entry
 .section .note.GNU-stack,"",@progbits

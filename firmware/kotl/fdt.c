@@ -57,7 +57,7 @@ int kotl_parse_fdt(const void *blob, KOTL_BOOT_INFO *info)
     struct NODE {
         uint64_t base, size, pci_base, pci_size;
         uint32_t kind, path_length;
-        int memory;
+        int memory, cpu;
     } stack[64];
     uint64_t uarts[4];
     char uart_paths[4][192], path[192], chosen[192];
@@ -77,6 +77,8 @@ int kotl_parse_fdt(const void *blob, KOTL_BOOT_INFO *info)
                 n++;
             if (p + n == end)
                 return 0;
+            if (n>=7 && p[0]=='t' && p[1]=='h' && p[2]=='r' && p[3]=='e' &&
+                p[4]=='a' && p[5]=='d' && p[6]=='0')info->threads=2;
             unsigned previous = path_length;
             if (depth) {
                 if (path_length + 1 + n >= sizeof(path))
@@ -97,6 +99,7 @@ int kotl_parse_fdt(const void *blob, KOTL_BOOT_INFO *info)
             if (!depth)
                 return 0;
             struct NODE *node = &stack[depth - 1];
+            if (node->cpu)info->hart_count++;
             if (node->memory) {
                 if (++memory_count != 1 || !node->size)
                     return 0;
@@ -165,6 +168,8 @@ int kotl_parse_fdt(const void *blob, KOTL_BOOT_INFO *info)
                     return 0;
             } else if (eq(name, name_space, "device_type") && eq((const char *)p, n, "memory"))
                 node->memory = 1;
+            else if (eq(name, name_space, "device_type") && eq((const char *)p,n,"cpu"))
+                node->cpu=1;
             else if (eq(name, name_space, "compatible")) {
                 if (compatible((const char *)p, n, "ns16550a"))
                     node->kind = 1;
@@ -230,6 +235,8 @@ int kotl_parse_fdt(const void *blob, KOTL_BOOT_INFO *info)
         info->kaia >= 0x100000000ULL || info->iommu >= 0x100000000ULL ||
         info->ecam >= 0x100000000ULL || info->uart >= 0x100000000ULL)
         return 0;
+    if(!info->hart_count || info->hart_count>16)return 0;
+    if(!info->threads)info->threads=1;
     info->magic = KOTL_BOOT_MAGIC;
     info->version = 1;
     info->dtb = (uint64_t)blob;

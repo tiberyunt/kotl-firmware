@@ -16,6 +16,9 @@
 #define KSI_CONSOLE_GETC 5
 #define KSI_TIME 6
 #define KSI_MODEL_SELECT 15
+#define KSI_BOOT_EXIT 16
+#define KSI_WALLTIME 17
+#define KOTL_BOOT_INFO_BASE 0x01000000ULL
 #define KSI_OK 0
 #define KSI_UNSUPPORTED (-2LL)
 #define KSI_INVALID_PARAMETER (-3LL)
@@ -34,23 +37,26 @@ typedef struct {
     uint64_t magic, version, boot_mode;
     uint64_t ram_base, ram_size, dtb, dtb_size;
     uint64_t uart, syscon, timer, kaia, iommu, ecam, ecam_size, pci_mmio32, pci_mmio32_size;
+    uint64_t ksi_entry, hart_count, threads;
 } KOTL_BOOT_INFO;
+_Static_assert(offsetof(KOTL_BOOT_INFO,ksi_entry)==128,"KSI assembly binding");
 typedef struct {
     int64_t error;
     uint64_t value;
 } KSI_RESULT;
+/* C adapter to the retained F-level raw KSI ABI (R0=value, R1=error).
+ * The physical entry is published in the fixed firmware boot information. */
+KSI_RESULT kotl_ksi_call(uint64_t function, uint64_t argument);
 static inline KSI_RESULT ksi_call(uint64_t function, uint64_t argument)
 {
-    register uint64_t a0 __asm__("$16") = function;
-    register uint64_t a1 __asm__("$17") = argument;
-    register uint64_t error __asm__("$0");
-    register uint64_t value __asm__("$1");
-    __asm__ volatile(".long 0x04000002" : "=r"(error), "=r"(value) : "r"(a0), "r"(a1) : "memory");
-    return (KSI_RESULT){(int64_t)error, value};
+    return kotl_ksi_call(function, argument);
 }
 unsigned nvme_namespaces(uint32_t *, unsigned);
 uint64_t nvme_select(unsigned, uint32_t);
 void boot_manager(void);
+void kotl_pal_init(void);
+int kotl_pal_fdt_init(void);
+void kotl_pal_fdt_state(unsigned,int);
 int boot_use_variables(void);
 uint64_t boot_selected(void **, uint64_t *, void **);
 void display_ui_begin(void);

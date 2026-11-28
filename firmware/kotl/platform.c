@@ -69,27 +69,28 @@ void *platform_dtb(void)
 }
 EFI_STATUS platform_exit_boot(void)
 {
-    if (ksi_call(KSI_MODEL_SELECT, 0).error)
-        return EFI_UNSUPPORTED;
     EFI_STATUS status = storage_quiesce();
-    if (!status)
-        display_stop();
-    return status;
+    if (status)
+        return status;
+    if (ksi_call(KSI_BOOT_EXIT, 0).error)
+        return EFI_UNSUPPORTED;
+    display_stop();
+    return EFI_SUCCESS;
 }
 void halt(void)
 {
     ksi_call(KSI_SYSTEM_OFF, 0);
     for (;;)
-        __asm__ volatile(".long 0x04000001");
+        __asm__ volatile(".long 0x47ff041f");
 }
 void kotl_fatal(void)
 {
     puts_serial("FAIL: native firmware trap cause=");
-    hex_serial(KOTL_READ_CSR(3));
+    hex_serial(KOTL_READ_CSR(0x102));
     puts_serial(" EPC=");
-    hex_serial(KOTL_READ_CSR(2));
+    hex_serial(KOTL_READ_CSR(0x101));
     puts_serial(" TVAL=");
-    hex_serial(KOTL_READ_CSR(4));
+    hex_serial(KOTL_READ_CSR(0x103));
     puts_serial("\n");
     halt();
 }

@@ -1,0 +1,10 @@
+{
+  "upstream": "https://github.com/qemu/qemu-palcode",
+  "commit": "99d9b4dcf27d7fbcbadab71bdc88ef6531baf6bf",
+  "files": {
+    "osf.h": "686a7d8c35fb3e8bce5e7c196819ef1d6af5bd036205e145023982b2ab30e105",
+    "COPYING": "6f04ae8364d0079a192b14635f4b1da294ce18724c034c39a6a41d1b09df6100",
+    "pal.h": "15f81dfb49e5766af3a5a5a480870570d2e103e0009d5dab7c04aa4bd99ed995",
+    "pal.S": "6324eb04d383919ab58a8908f0dc4864ab0eb832038262c1ecae4dfb3133ba9d"
+  }
+}

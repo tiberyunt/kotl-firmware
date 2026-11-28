@@ -3,24 +3,24 @@ CROSS ?= $(abspath $(ROOT)/toolchain/bin/alpha-linux-gnu-)
 OUT := $(ROOT)/build/kotl-efi
 CC = $(CROSS)gcc
 LD = $(CROSS)ld
-CFLAGS = -std=gnu11 -O2 -g -Wall -Wextra -Werror -ffreestanding -fno-delete-null-pointer-checks -fno-builtin -fno-stack-protector -fno-pic -fno-pie -fno-asynchronous-unwind-tables -mno-fp-regs -mcpu=ev67 -mlarge-data -G0 -DKOTL_NATIVE -I$(ROOT)/include -I$(ROOT)/firmware -I.
+CFLAGS = -std=gnu11 -O2 -g -Wall -Wextra -Werror -ffreestanding -fno-delete-null-pointer-checks -fno-builtin -fno-stack-protector -fno-pic -fno-pie -fno-asynchronous-unwind-tables -mno-fp-regs -mcpu=ev67 -mlarge-data -G0 -DKOTL_NATIVE -I$(ROOT)/include -I$(ROOT)/firmware -I. -I$(OUT)
 COMMON = support events variables services protocol device-path boot-options pe image-jump block fat
-OBJS = $(OUT)/start.o $(OUT)/division.o $(addprefix $(OUT)/,$(addsuffix .o,$(COMMON))) $(OUT)/platform.o $(OUT)/main.o $(OUT)/nvme.o $(OUT)/display.o $(OUT)/font.o $(OUT)/boot.o $(OUT)/settings.o $(OUT)/menu.o $(OUT)/trap.o $(OUT)/demo.o
+OBJS = $(OUT)/start.o $(OUT)/division.o $(addprefix $(OUT)/,$(addsuffix .o,$(COMMON))) $(OUT)/pal-protocol.o $(OUT)/pal-fdt.o $(OUT)/handoff.o $(OUT)/resident-pal.o $(OUT)/platform.o $(OUT)/main.o $(OUT)/nvme.o $(OUT)/display.o $(OUT)/font.o $(OUT)/boot.o $(OUT)/settings.o $(OUT)/menu.o $(OUT)/trap.o $(OUT)/demo.o
 .PHONY: all
 all: $(OUT)/kotl-efi-flash.bin $(OUT)/esp.img $(OUT)/HELLOAXP64.EFI $(OUT)/RESETAXP64.EFI
 $(OUT):
 	mkdir -p $@
 $(OUT)/%.o: ../%.c $(ROOT)/include/efi-device-path.h ../device-path.h ../platform.h ../services.h ../storage.h $(ROOT)/include/efi.h $(ROOT)/include/efi-storage.h $(ROOT)/include/efi-graphics.h kotl.h Makefile | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@
-$(OUT)/platform.o $(OUT)/main.o $(OUT)/nvme.o $(OUT)/display.o $(OUT)/boot.o $(OUT)/settings.o $(OUT)/menu.o $(OUT)/fdt.o: $(OUT)/%.o: %.c kotl.h settings.h menu.h ../platform.h ../services.h ../storage.h $(ROOT)/include/efi.h $(ROOT)/include/efi-storage.h $(ROOT)/include/efi-graphics.h Makefile | $(OUT)
+$(OUT)/pal-protocol.o $(OUT)/pal-fdt.o $(OUT)/platform.o $(OUT)/main.o $(OUT)/nvme.o $(OUT)/display.o $(OUT)/boot.o $(OUT)/settings.o $(OUT)/menu.o $(OUT)/fdt.o: $(OUT)/%.o: %.c kotl.h settings.h menu.h ../platform.h ../services.h ../storage.h $(ROOT)/include/efi.h $(ROOT)/include/efi-storage.h $(ROOT)/include/efi-graphics.h Makefile | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(OUT)/%.o: %.S Makefile | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(OUT)/division.o: ../division.S Makefile | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@
-$(OUT)/start.o: ../start.S Makefile | $(OUT)
+$(OUT)/start.o: ../start.S ksi-call.S Makefile | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@
-$(OUT)/app-entry.o: $(ROOT)/apps/entry.S Makefile | $(OUT)
+$(OUT)/app-entry.o: $(ROOT)/apps/entry.S ksi-call.S Makefile | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(OUT)/app-%.o: $(ROOT)/apps/%.c $(ROOT)/include/efi.h $(ROOT)/include/efi-storage.h $(ROOT)/include/efi-graphics.h kotl.h Makefile | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -177,4 +177,75 @@ $(OUT)/exit-test.o: $(ROOT)/apps/exit-test.c $(ROOT)/include/efi.h | $(OUT)
 $(OUT)/exit-test.elf: $(OUT)/exit-test.o $(OUT)/app-entry.o $(OUT)/app-lib.o apps.ld
 	$(LD) --emit-relocs -T apps.ld -o $@ $(OUT)/app-entry.o $(OUT)/app-lib.o $<
 $(OUT)/EXITTEST.EFI: $(OUT)/exit-test.elf $(ROOT)/scripts/elf-to-pe.py
+	python3 $(ROOT)/scripts/elf-to-pe.py $< $@ --base 0x101000000 --relocatable
+
+$(OUT)/pal-start.o: pal/pal.S pal/pal.h pal-layout.h
+	$(CC) $(CFLAGS) -c $< -o $@
+$(OUT)/pal-core.o: pal/pal.c pal/pal.h pal-layout.h $(ROOT)/include/efi-kotl-pal.h
+	$(CC) $(CFLAGS) -c $< -o $@
+$(OUT)/kotl-pal.elf: $(OUT)/pal-start.o $(OUT)/pal-core.o pal/pal.ld
+	$(LD) -T pal/pal.ld -o $@ $(filter %.o,$^)
+$(OUT)/kotl-pal.bin: $(OUT)/kotl-pal.elf
+	$(CROSS)objcopy -O binary -j .text -j .rodata -j .data -j .got $< $@
+$(OUT)/resident-pal-meta.h: $(OUT)/kotl-pal.bin $(ROOT)/scripts/make-resident-pal.py
+	python3 $(ROOT)/scripts/make-resident-pal.py $< $(OUT)/kotl-pal.kpal $@
+$(OUT)/pal-protocol.o: $(OUT)/resident-pal-meta.h pal-layout.h $(ROOT)/include/efi-kotl-pal.h
+$(OUT)/resident-pal.S: $(OUT)/kotl-pal.bin
+	python3 -c 'from pathlib import Path; Path("$@").write_text(".section .rodata\n.balign 8\n.global resident_pal_start,resident_pal_end\nresident_pal_start:\n.incbin \"$(abspath $<)\"\nresident_pal_end:\n.section .note.GNU-stack,\"\",@progbits\n")'
+$(OUT)/resident-pal.o: $(OUT)/resident-pal.S
+	$(CC) $(CFLAGS) -c $< -o $@
+
+.PHONY: pal-test-apps
+pal-test-apps: $(OUT)/PALNATIVE.EFI $(OUT)/PALFULL.EFI $(OUT)/PALBAD.EFI $(OUT)/PALPROTECT.EFI $(OUT)/PALFWPROTECT.EFI $(OUT)/PAL4K.EFI
+$(OUT)/pal-test-native.o: $(ROOT)/apps/pal-test.c $(ROOT)/include/efi-kotl-pal.h kotl.h | $(OUT)
+	$(CC) $(CFLAGS) -DTEST_MODEL=1 -DTEST_BAD_CONTEXT=0 -c $< -o $@
+$(OUT)/pal-test-full.o: $(ROOT)/apps/pal-test.c $(ROOT)/include/efi-kotl-pal.h kotl.h | $(OUT)
+	$(CC) $(CFLAGS) -DTEST_MODEL=2 -DTEST_BAD_CONTEXT=0 -c $< -o $@
+$(OUT)/pal-test-bad.o: $(ROOT)/apps/pal-test.c $(ROOT)/include/efi-kotl-pal.h kotl.h | $(OUT)
+	$(CC) $(CFLAGS) -DTEST_MODEL=1 -DTEST_BAD_CONTEXT=1 -c $< -o $@
+$(OUT)/pal-kernel-native.o: $(ROOT)/apps/pal-test-kernel.S | $(OUT)
+	$(CC) $(CFLAGS) -DTEST_IMPL=9 -c $< -o $@
+$(OUT)/pal-kernel-full.o: $(ROOT)/apps/pal-test-kernel.S | $(OUT)
+	$(CC) $(CFLAGS) -DTEST_IMPL=3 -c $< -o $@
+$(OUT)/pal-native.elf: $(OUT)/app-entry.o $(OUT)/app-lib.o $(OUT)/pal-test-native.o $(OUT)/pal-kernel-native.o apps.ld
+	$(LD) --emit-relocs -T apps.ld -o $@ $(filter %.o,$^)
+$(OUT)/pal-full.elf: $(OUT)/app-entry.o $(OUT)/app-lib.o $(OUT)/pal-test-full.o $(OUT)/pal-kernel-full.o apps.ld
+	$(LD) --emit-relocs -T apps.ld -o $@ $(filter %.o,$^)
+$(OUT)/pal-bad.elf: $(OUT)/app-entry.o $(OUT)/app-lib.o $(OUT)/pal-test-bad.o $(OUT)/pal-kernel-native.o apps.ld
+	$(LD) --emit-relocs -T apps.ld -o $@ $(filter %.o,$^)
+$(OUT)/PALNATIVE.EFI: $(OUT)/pal-native.elf
+	python3 $(ROOT)/scripts/elf-to-pe.py $< $@ --base 0x101000000 --relocatable
+$(OUT)/PALFULL.EFI: $(OUT)/pal-full.elf
+	python3 $(ROOT)/scripts/elf-to-pe.py $< $@ --base 0x101000000 --relocatable
+$(OUT)/PALBAD.EFI: $(OUT)/pal-bad.elf
+	python3 $(ROOT)/scripts/elf-to-pe.py $< $@ --base 0x101000000 --relocatable
+
+$(OUT)/pal-kernel-protect.o: $(ROOT)/apps/pal-test-kernel.S | $(OUT)
+	$(CC) $(CFLAGS) -DTEST_IMPL=9 -DTEST_BAD_MEMORY=1 -c $< -o $@
+$(OUT)/pal-protect.elf: $(OUT)/app-entry.o $(OUT)/app-lib.o $(OUT)/pal-test-native.o $(OUT)/pal-kernel-protect.o apps.ld
+	$(LD) --emit-relocs -T apps.ld -o $@ $(filter %.o,$^)
+$(OUT)/PALPROTECT.EFI: $(OUT)/pal-protect.elf
+	python3 $(ROOT)/scripts/elf-to-pe.py $< $@ --base 0x101000000 --relocatable
+.PHONY: pal-test-disks
+pal-test-disks: $(OUT)/pal-pal-esp.img $(OUT)/pal-full-pal-esp.img
+$(OUT)/pal-pal-esp.img: $(OUT)/PALNATIVE.EFI $(ROOT)/scripts/make-esp.py
+	python3 $(ROOT)/scripts/make-esp.py $< $@
+$(OUT)/pal-full-pal-esp.img: $(OUT)/PALFULL.EFI $(ROOT)/scripts/make-esp.py
+	python3 $(ROOT)/scripts/make-esp.py $< $@
+
+$(OUT)/pal-test-4k.o: $(ROOT)/apps/pal-test.c $(ROOT)/include/efi-kotl-pal.h kotl.h | $(OUT)
+	$(CC) $(CFLAGS) -DTEST_MODEL=1 -DTEST_GRANULE=12 -DTEST_BAD_CONTEXT=0 -c $< -o $@
+$(OUT)/pal-4k.elf: $(OUT)/app-entry.o $(OUT)/app-lib.o $(OUT)/pal-test-4k.o $(OUT)/pal-kernel-native.o apps.ld
+	$(LD) --emit-relocs -T apps.ld -o $@ $(filter %.o,$^)
+$(OUT)/PAL4K.EFI: $(OUT)/pal-4k.elf
+	python3 $(ROOT)/scripts/elf-to-pe.py $< $@ --base 0x101000000 --relocatable
+pal-test-disks: $(OUT)/pal-pal-4k-esp.img
+$(OUT)/pal-pal-4k-esp.img: $(OUT)/PAL4K.EFI $(ROOT)/scripts/make-esp.py
+	python3 $(ROOT)/scripts/make-esp.py $< $@
+
+$(OUT)/pal-kernel-fw-protect.o: $(ROOT)/apps/pal-test-kernel.S | $(OUT)
+	$(CC) $(CFLAGS) -DTEST_IMPL=9 -DTEST_BAD_MEMORY=2 -c $< -o $@
+$(OUT)/pal-fw-protect.elf: $(OUT)/app-entry.o $(OUT)/app-lib.o $(OUT)/pal-test-native.o $(OUT)/pal-kernel-fw-protect.o apps.ld
+	$(LD) --emit-relocs -T apps.ld -o $@ $(filter %.o,$^)
+$(OUT)/PALFWPROTECT.EFI: $(OUT)/pal-fw-protect.elf
 	python3 $(ROOT)/scripts/elf-to-pe.py $< $@ --base 0x101000000 --relocatable

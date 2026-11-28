@@ -255,7 +255,7 @@ static void setup_screen(unsigned tab, unsigned row, const FIRMWARE_SETTINGS *ed
     char number[12], label[48];
     if (tab == 0) {
         menu_field(5, "Firmware", "Kotl EFI prototype", 0);
-        menu_field(7, "Processor", "Alpha EV9 (native)", 0);
+        menu_field(7, "Processor", "Alpha EV9", 0);
         format_number(number, *(volatile uint64_t *)(native_boot_info->syscon + 16));
         menu_field(9, "Hardware threads", number, 0);
         format_number(number, native_boot_info->ram_size / (1024 * 1024));
